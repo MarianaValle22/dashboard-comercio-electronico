@@ -19,8 +19,9 @@ Dashboard interactivo para la gerencia de marketplace y operaciones de una plata
 │   ├── 01_comprension_del_negocio.ipynb
 │   ├── 02_comprension_de_los_datos.ipynb
 │   └── 03_preparacion_de_los_datos.ipynb
-├── dashboard/          # archivo editable del dashboard y enlace de publicación
-├── presentacion/       # presentación final de la sustentación
+├── reports/
+│   ├── dashboard/      # archivo editable del dashboard y enlace de publicación
+│   └── presentacion/   # presentación final de la sustentación
 ├── README.md
 ├── requirements.txt
 └── .gitignore
