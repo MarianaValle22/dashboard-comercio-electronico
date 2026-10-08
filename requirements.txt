@@ -1,7 +1,7 @@
-pandas
+pandas>=2.0
 numpy
 matplotlib
 seaborn
 jupyter
-streamlit
+streamlit>=1.36
 plotly
