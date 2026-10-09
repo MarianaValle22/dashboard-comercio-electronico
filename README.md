@@ -10,7 +10,7 @@ Herramientas de Visualización para la Inteligencia de Negocios · Universidad d
 
 ## Dashboard publicado
 
-🔗 **Enlace:** 
+🔗 **Enlace:** https://dashboard-marketplace-grupo10.streamlit.app/
 
 ## Contexto del proyecto
 
