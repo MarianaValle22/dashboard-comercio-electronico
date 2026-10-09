@@ -42,6 +42,13 @@ LISTA_ALTO = 210     # alto máximo de la lista de opciones de cada filtro; si h
 LISTA_MAX_SIN_BARRA = 5  # hasta este número de opciones la lista se muestra completa
 ALTO_GRAFICO = 360
 
+# Diferencias mínimas para recomendar un grupo concreto. En el análisis (notebook 02 y pruebas sobre la base limpia),
+# las brechas de descuento por categoría (0,23 pts) y de entrega a tiempo por operador (0,35 pts) o región (0,99 pts)
+# no fueron estadísticamente significativas (p > 0,4); por debajo de estos umbrales el desempeño se trata como parejo.
+UMBRAL_DESCUENTO = 1.0     # puntos de descuento promedio entre categorías
+UMBRAL_A_TIEMPO = 2.0      # puntos de entrega a tiempo entre operadores o regiones
+UMBRAL_DEVOLUCION = 1.0    # puntos de devoluciones entre tipos de promesa de entrega
+
 # Barra de herramientas de Plotly al pasar el cursor: zoom, desplazar, acercar, alejar y restablecer.
 CONFIG = {"displayModeBar": "hover", "displaylogo": False, "scrollZoom": False,
           "modeBarButtonsToRemove": ["select2d", "lasso2d", "autoScale2d"]}
@@ -53,10 +60,11 @@ COLUMNAS = [
     "id_orden", "fecha_orden", "anio", "anio_mes", "periodo_comparable",
     "region", "categoria", "tipo_vendedor", "dispositivo", "fuente_trafico", "metodo_pago",
     "operador_entrega", "valor_bruto_cop", "descuento_pct", "valor_descuento_cop",
-    "rango_descuento", "valor_neto_cop", "alto_valor", "dias_retraso",
+    "rango_descuento", "valor_neto_cop", "alto_valor", "dias_retraso", "tipo_promesa",
     "devolucion_30d", "calificacion_producto_1a5",
 ]
-ORDEN_RANGOS = {"rango_descuento": ["0–5 %", "5–10 %", "10–15 %", "15–20 %", "20 % o más"]}  # notebook 03, sección 3.9
+ORDEN_RANGOS = {"rango_descuento": ["0–5 %", "5–10 %", "10–15 %", "15–20 %", "20 % o más"],  # notebook 03, sección 3.6
+                "tipo_promesa": ["Mismo día", "1–2 días", "3 o más días"]}
 FILTROS = {
     "categoria": "Categoría", "region": "Región", "tipo_vendedor": "Tipo de vendedor",
     "dispositivo": "Dispositivo", "fuente_trafico": "Fuente de tráfico",
@@ -153,6 +161,8 @@ def tarjeta(columna, etiqueta, valor, definicion, completo, comparacion=None, no
     ayuda = md(f"{definicion}\n\n**Valor completo:** {completo}")
     with columna:
         st.metric(etiqueta, valor, comparacion, delta_color="off", help=ayuda)
+        if nota:
+            st.caption(md(nota))
 
 
 # Colores: degradado de azul y color de énfasis (notebook 02)
@@ -398,7 +408,7 @@ with st.expander("Contexto: problema, audiencia, decisiones, preguntas e interac
         "3) ¿Cuánto baja la calificación cuando aumentan los días de retraso y dónde conviene actuar?\n\n"
         "**Indicadores.** Ventas netas, ticket promedio, descuento promedio, entrega a tiempo, devoluciones y calificación. "
         "**Dimensiones para comparar.** Categoría, región, tipo de vendedor, dispositivo, fuente de tráfico, medio de pago, "
-        "operador, rango de descuento, días de retraso y tiempo.\n\n"
+        "operador, rango de descuento, días de retraso, promesa de entrega y tiempo.\n\n"
         "**Cómo interactuar.** Los filtros de la barra lateral actualizan todos los indicadores y gráficos. Un clic en una categoría del "
         "primer gráfico filtra el resto del tablero. Los gráficos se amplían con la barra de herramientas que aparece al pasar el cursor, "
         "y el signo «?» de cada indicador muestra su definición y su valor completo. **Hallazgos priorizados:** pestaña 4.")
@@ -477,22 +487,80 @@ dev_retraso = dx.groupby("dias_retraso")["devolucion_30d"].mean() * 100
 dx_t = dx.assign(a_tiempo=dx["dias_retraso"].eq(0))
 a_operador = dx_t.groupby("operador_entrega")["a_tiempo"].mean().mul(100).sort_values(ascending=False)
 a_region = dx_t.groupby("region")["a_tiempo"].mean().mul(100).sort_values(ascending=False)
+dev_promesa = dx.groupby("tipo_promesa", observed=True)["devolucion_30d"].mean() * 100
+brecha_desc = desc_cat.iloc[0] - desc_cat.iloc[-1] if len(desc_cat) > 1 else 0
+brecha_op = a_operador.iloc[0] - a_operador.iloc[-1] if len(a_operador) > 1 else 0
+brecha_reg = a_region.iloc[0] - a_region.iloc[-1] if len(a_region) > 1 else 0
 
 
-def extremos(serie):
-    """Frase con el mayor y el menor valor de un gráfico de barras ordenado de mayor a menor."""
-    if len(serie) < 2:
-        return f"solo hay {serie.index[0]} ({pct(serie.iloc[0])})"
-    return f"{serie.index[0]} lidera con {pct(serie.iloc[0])} y {serie.index[-1]} cierra con {pct(serie.iloc[-1])}"
+PROMESA_TEXTO = {"Mismo día": "para el mismo día", "1–2 días": "a 1–2 días", "3 o más días": "a 3 o más días"}
+PROMESA_DE = {"Mismo día": "del mismo día", "1–2 días": "de 1–2 días", "3 o más días": "de 3 o más días"}
+NUMEROS = {2: "dos", 3: "tres", 4: "cuatro", 5: "cinco", 6: "seis", 7: "siete", 8: "ocho", 9: "nueve", 10: "diez",
+           11: "once", 12: "doce"}
+FUENTE_TEXTO = {"Orgánico": "el canal orgánico", "Pago": "publicidad pagada", "Redes sociales": "redes sociales",
+                "Directo": "tráfico directo", "Email": "email"}
+PAGO_TEXTO = {"Tarjeta": "tarjeta", "PSE/Transferencia": "PSE/transferencia", "Billetera": "billetera",
+              "Contraentrega": "pago contra entrega"}
+VARIACION_ESTABLE = 0.30   # si (máximo − mínimo) / promedio de las ventas mensuales es menor, se describen como estables
 
 
-# Lecturas analíticas: todas las cifras salen de los gráficos de la pestaña (el texto se ajusta a los filtros)
+def cuantos(n):
+    return NUMEROS.get(n, str(n))
+
+
+def con_retraso(n):
+    """«las órdenes sin retraso» / «las que llegan con cuatro días de retraso»."""
+    n = int(n)
+    if n == 0:
+        return "las órdenes sin retraso"
+    return f"las que llegan con {'un día' if n == 1 else cuantos(n) + ' días'} de retraso"
+
+
+def enumerar(partes):
+    return partes[0] if len(partes) == 1 else ", ".join(partes[:-1]) + " y " + partes[-1]
+
+
+def frase_promesa():
+    """Destaca el tipo de promesa con más devoluciones solo si se separa del resto por al menos UMBRAL_DEVOLUCION."""
+    if len(dev_promesa) < 2:
+        return None
+    resto = dev_promesa.drop(dev_promesa.idxmax())
+    if dev_promesa.max() - resto.max() < UMBRAL_DEVOLUCION:
+        return None
+    otros = [f"{pct(v)} en {'las promesas' if i == 0 else 'las'} {PROMESA_DE[str(nombre)]}"
+             for i, (nombre, v) in enumerate(resto.items())]
+    return (f"**Donde sí aparecen más devoluciones es en la entrega prometida {PROMESA_TEXTO[str(dev_promesa.idxmax())]}**: "
+            f"{pct(dev_promesa.max())}, frente a {enumerar(otros)}.")
+
+
+# Lecturas analíticas: un párrafo por idea, empezando por el hallazgo principal. Todas las cifras salen de los
+# gráficos de la pestaña y se recalculan con los filtros.
 # Objetivo 1
-l1 = f"**{top}** aporta {pct(pesos.loc[top, 'ven'])} de las ventas con {pct(pesos.loc[top, 'ord'])} de las órdenes"
-l1 += (f" y tiene el ticket promedio más alto (${es(ticket_cat[top])})." if ticket_cat.index[0] == top
-       else f". El ticket promedio más alto es el de {ticket_cat.index[0]} (${es(ticket_cat.iloc[0])}).")
-l1 += f" Por fuente de tráfico, {extremos(fp)}; por medio de pago, {extremos(pp)}."
-l1 += f" Las ventas netas mensuales van de ${millones(mensual['ventas'].min())} M a ${millones(mensual['ventas'].max())} M."
+p1 = []
+ven, ord_ = pesos.loc[top, "ven"], pesos.loc[top, "ord"]
+if len(pesos) == 1:
+    p1.append(f"Con los filtros actuales solo se analiza **{top}**.")
+else:
+    frase = (f"**{top} sostiene el ingreso.** Con solo el {pct(ord_)} de las órdenes genera el {pct(ven)} de las ventas netas"
+             if ord_ < ven else f"**{top} es la categoría con más ventas.** Genera el {pct(ven)} de las ventas netas con el "
+                                f"{pct(ord_)} de las órdenes")
+    if ticket_cat.index[0] == top and len(ticket_cat) > 1:
+        segunda = ticket_cat.index[1]
+        frase += (f", porque su ticket promedio (${es(ticket_cat[top])}) es {es(ticket_cat[top] / ticket_cat[segunda], 1)} veces "
+                  f"el de {segunda} (${es(ticket_cat[segunda])}), la categoría que le sigue.")
+    else:
+        frase += "."
+    p1.append(frase)
+p1.append(f"**Los canales{', en cambio,' if len(pesos) > 1 else ''} solo cambian el volumen de órdenes.** La mayor cantidad de órdenes llega por "
+          f"{FUENTE_TEXTO.get(fp.index[0], fp.index[0])} ({pct(fp.iloc[0])}) y se paga con "
+          f"{PAGO_TEXTO.get(pp.index[0], pp.index[0])} ({pct(pp.iloc[0])}).")
+v_min, v_max = mensual["ventas"].min(), mensual["ventas"].max()
+dec_m = 0 if v_min >= 100 else 2  # con montos pequeños (filtros muy estrechos) se muestran decimales
+if len(mensual) > 1 and (v_max - v_min) / mensual["ventas"].mean() < VARIACION_ESTABLE:
+    p1.append(f"**En general, las ventas se mantienen estables mes a mes**, entre ${es(v_min, dec_m)} M y ${es(v_max, dec_m)} M.")
+elif len(mensual) > 1:
+    p1.append(f"**Las ventas cambian bastante de un mes a otro**: van de ${es(v_min, dec_m)} M a ${es(v_max, dec_m)} M.")
+l1 = "\n\n".join(p1)
 
 # Objetivo 2
 hay_rangos = len(rd) > 1
@@ -501,37 +569,57 @@ if hay_rangos:
     cambio_bruto = (rd["bruto"].iloc[-1] / rd["bruto"].iloc[0] - 1) * 100
     cambio_neto = (rd["neto"].iloc[-1] / rd["neto"].iloc[0] - 1) * 100
     ticket_baja = round(rd["neto"].iloc[-1], 2) < round(rd["neto"].iloc[0], 2)
-    l2 = (f"El ticket pagado pasa de ${es(rd['neto'].iloc[0])} con {r0} de descuento a ${es(rd['neto'].iloc[-1])} con {r1} "
-          f"({variacion(cambio_neto)}), mientras que el valor antes del descuento pasa de ${es(rd['bruto'].iloc[0])} a "
-          f"${es(rd['bruto'].iloc[-1])} ({variacion(cambio_bruto)}). "
-          f"El rango {r1} reúne {pct(rd['pct_ord'].iloc[-1])} de las órdenes y {pct(rd['pct_ven'].iloc[-1])} de las ventas; "
-          f"el rango {r0}, {pct(rd['pct_ord'].iloc[0])} y {pct(rd['pct_ven'].iloc[0])}. "
-          f"Las devoluciones van de {pct(rd['devol'].iloc[0])} a {pct(rd['devol'].iloc[-1])}, y su valor más alto está en "
-          f"{rd['devol'].idxmax()} ({pct(rd['devol'].max())}). "
-          f"{desc_cat.index[0]} es la categoría con mayor descuento promedio ({pct(desc_cat.iloc[0])}).")
+    p2 = []
+    if ticket_baja and abs(cambio_bruto) < 10:
+        p2.append(f"**Los descuentos no hacen que el cliente compre más; solo hacen que pague menos.** El valor de la orden antes "
+                  f"del descuento es casi el mismo en los {cuantos(len(rd))} rangos de descuento (entre ${es(rd['bruto'].min())} y "
+                  f"${es(rd['bruto'].max())}), así que el ticket pagado cae {es(abs(cambio_neto), 2)} %: de ${es(rd['neto'].iloc[0])} "
+                  f"en el rango de {r0} a ${es(rd['neto'].iloc[-1])} en el de {r1}.")
+    else:
+        p2.append(f"**El ticket pagado {variacion(cambio_neto)} entre el rango de {r0} y el de {r1}** "
+                  f"(de ${es(rd['neto'].iloc[0])} a ${es(rd['neto'].iloc[-1])}), mientras que el valor antes del descuento "
+                  f"{variacion(cambio_bruto)}.")
+    dif_dev = rd["devol"].iloc[-1] - rd["devol"].iloc[0]
+    p2.append((f"**Las devoluciones apenas cambian con el descuento**: " if abs(dif_dev) < UMBRAL_DEVOLUCION else
+               f"**Las devoluciones {'suben' if dif_dev > 0 else 'bajan'} con el descuento**: ")
+              + f"van de {pct(rd['devol'].iloc[0])} en el rango de {r0} a {pct(rd['devol'].iloc[-1])} en el de {r1}.")
+    if len(desc_cat) > 1:
+        p2.append((f"**El descuento se reparte de forma pareja entre las {cuantos(len(desc_cat))} categorías**: el promedio va de "
+                   if brecha_desc < UMBRAL_DESCUENTO else f"**{desc_cat.index[0]} recibe más descuento que el resto**: el promedio va de ")
+                  + f"{pct(desc_cat.iloc[-1])} en {desc_cat.index[-1]} a {pct(desc_cat.iloc[0])} en {desc_cat.index[0]}.")
+    l2 = "\n\n".join(p2)
 else:
     l2 = "Con estos filtros solo hay un rango de descuento: amplíe la selección para compararlos."
 
 # Objetivo 3
 hay_retraso = len(cr) > 1
-l3 = []
+p3 = []
 if hay_retraso:
     c0, c1 = round(cr.iloc[0], 2), round(cr.iloc[-1], 2)
-    l3.append(f"La calificación {tendencia(c0, c1)} de {es(c0, 2)} ({dias(cr.index[0])}) a {es(c1, 2)} ({dias(cr.index[-1])}): "
-              f"{es(abs(c0 - c1), 2)} puntos {'menos' if c1 < c0 else 'más'}.")
     pasos = cr.diff().dropna()
-    if len(pasos) > 1 and (pasos < 0).all():
-        l3.append(f"Baja con cada día adicional de retraso, entre {es(abs(pasos.max()), 2)} y {es(abs(pasos.min()), 2)} puntos por día.")
-if len(dev_retraso) > 1:
-    l3.append(f"Las devoluciones van de {pct(dev_retraso.iloc[0])} ({dias(dev_retraso.index[0])}) a "
-              f"{pct(dev_retraso.iloc[-1])} ({dias(dev_retraso.index[-1])}).")
+    if c1 < c0 and (pasos < 0).all():
+        p3.append(f"**El retraso es lo que más afecta la experiencia del cliente.** La calificación baja con cada día de retraso, "
+                  f"de {es(c0, 2)} en {con_retraso(cr.index[0])} a {es(c1, 2)} en {con_retraso(cr.index[-1])}.")
+    else:
+        p3.append(f"**La calificación {tendencia(c0, c1)} con el retraso**: va de {es(c0, 2)} en {con_retraso(cr.index[0])} a "
+                  f"{es(c1, 2)} en {con_retraso(cr.index[-1])}.")
+partes = []
 if len(a_operador) > 1:
-    frase = (f"La entrega a tiempo va de {pct(a_operador.iloc[-1])} ({a_operador.index[-1]}) a {pct(a_operador.iloc[0])} "
-             f"({a_operador.index[0]}) entre operadores")
-    if len(a_region) > 1:
-        frase += f" y de {pct(a_region.iloc[-1])} ({a_region.index[-1]}) a {pct(a_region.iloc[0])} ({a_region.index[0]}) entre regiones"
-    l3.append(frase + ".")
-l3_txt = " ".join(l3) if l3 else "Con estos filtros no hay suficientes grupos para comparar."
+    partes.append((f"entre los {cuantos(len(a_operador))} operadores, de {pct(a_operador.iloc[-1])} en {a_operador.index[-1]} a "
+                   f"{pct(a_operador.iloc[0])} en {a_operador.index[0]}", brecha_op, "un operador"))
+if len(a_region) > 1:
+    partes.append((f"entre las {cuantos(len(a_region))} regiones, de {pct(a_region.iloc[-1])} en {a_region.index[-1]} a "
+                   f"{pct(a_region.iloc[0])} en {a_region.index[0]}", brecha_reg, "una región"))
+if partes:
+    textos = ", y ".join(t for t, _, _ in partes)
+    if all(b < UMBRAL_A_TIEMPO for _, b, _ in partes):
+        quien = " ni de ".join(q for _, _, q in partes)
+        p3.append(f"**No es un problema de {quien} en particular.** La entrega a tiempo es casi igual {textos}.")
+    else:
+        p3.append(f"**La entrega a tiempo cambia según dónde y quién entrega**: {textos}.")
+if frase_promesa():
+    p3.append(frase_promesa())
+l3_txt = "\n\n".join(p3) if p3 else "Con estos filtros no hay suficientes grupos para comparar."
 
 # 8. Construir visualizaciones
 t1, t2, t3, t4 = st.tabs(["1 · Ingreso y canales", "2 · Descuentos", "3 · Entrega y satisfacción", "4 · Conclusiones"])
@@ -562,7 +650,7 @@ with t1:
     rotulos = [f"{MESES[f.month - 1]} {f.year}" for f in fechas]
     linea(fechas, mensual[col_m], f"{metrica} por mes", eje_m, "Mes", formato_m, color=color_m, etiquetas=False,
           ticks=(fechas[::3], rotulos[::3]), detalle=rotulos)
-    st.info(md("**Lectura analítica.** " + l1))
+    st.info(md("**Lectura analítica.**\n\n" + l1))
 
 with t2:
     st.subheader("¿Los descuentos generan más valor o solo reducen el valor de cada compra y aumentan las devoluciones?")
@@ -587,11 +675,11 @@ with t2:
                "% de descuento promedio", pct, eje_cat="Categoría",
                referencia=(d["descuento_pct"].mean(), f"Promedio general {pct(d['descuento_pct'].mean())}"))
     st.caption(md(f"Con los filtros actuales, los descuentos restaron ${millones(cedido)} M, el {pct(pct_cedido)} del valor antes de descuento."))
-    st.info(md("**Lectura analítica.** " + l2))
+    st.info(md("**Lectura analítica.**\n\n" + l2))
 
 with t3:
     st.subheader("¿Cuánto baja la calificación cuando aumentan los días de retraso y dónde conviene actuar?")
-    a, b = st.columns(2)
+    a, b, e = st.columns(3)
     with a:
         mejor = list(cr.values).index(max(cr.values)) if len(cr) else 0
         linea([str(int(i)) for i in cr.index], cr.values, "Calificación promedio según los días de retraso",
@@ -605,6 +693,12 @@ with t3:
                "% de devoluciones según los días de retraso", "% de órdenes devueltas", pct,
                horizontal=False, eje_cat="Días de retraso (0 = sin retraso)", referencia=(k["devol"], f"Promedio {pct(k['devol'])}"))
         st.caption("Barras desde cero: la altura es proporcional al porcentaje.")
+    with e:
+        barras([str(p) for p in dev_promesa.index],
+               [("% de devoluciones", dev_promesa.values, destacar(dev_promesa.values, ROJO))],
+               "% de devoluciones según la promesa de entrega", "% de órdenes devueltas", pct,
+               horizontal=False, eje_cat="Días de entrega prometidos", referencia=(k["devol"], f"Promedio {pct(k['devol'])}"))
+        st.caption("Mismo día = entrega prometida para el mismo día de la compra.")
     a, b = st.columns(2)
     with a:
         barras(a_operador.index, [("Entrega a tiempo", a_operador.values, destacar(a_operador.values, VERDE))],
@@ -614,7 +708,7 @@ with t3:
         barras(a_region.index, [("Entrega a tiempo", a_region.values, destacar(a_region.values, VERDE))],
                "Entrega a tiempo por región", "% de órdenes sin retraso", pct,
                eje_cat="Región", rango=[0, 118], referencia=(k["a_tiempo"], f"Promedio {pct(k['a_tiempo'])}"))
-    st.info(md("**Lectura analítica.** " + l3_txt))
+    st.info(md("**Lectura analítica.**\n\n" + l3_txt))
     st.caption("La relación entre retraso y calificación es una asociación observada en los datos, no prueba que una cause la otra. "
                f"El promedio de calificación excluye {es(len(dx) - k['n_cal'])} órdenes sin calificar.")
 
@@ -622,59 +716,129 @@ with t3:
 with t4:
     st.subheader("Conclusiones")
 
-    # Objetivo 1: respuesta y decisión
-    r1_txt = (f"{top} concentra {pct(pesos.loc[top, 'ven'])} de las ventas con {pct(pesos.loc[top, 'ord'])} de las órdenes"
-              + (f", porque su ticket promedio (${es(ticket_cat[top])}) es el más alto." if ticket_cat.index[0] == top else ".")
-              + f" Las órdenes llegan sobre todo por {fp.index[0]} ({pct(fp.iloc[0])}) y se pagan con {pp.index[0]} ({pct(pp.iloc[0])}).")
-    d1_txt = f"Priorizar la inversión comercial en {top}; {fp.index[0]} es hoy la fuente con más órdenes y la primera que conviene cuidar."
+    # Tarjetas de conclusiones: misma lectura que el notebook 04 (secciones 4.3 a 4.7), con cifras que se recalculan.
+    def dias_tarjeta(n):
+        n = int(n)
+        return "sin retraso" if n == 0 else f"con {'un día' if n == 1 else cuantos(n) + ' días'}"
+
+    # Objetivo 1
+    if len(pesos) > 1 and ticket_cat.index[0] == top and len(ticket_cat) > 1:
+        segunda = ticket_cat.index[1]
+        r1_txt = (f"{top} concentra el {pct(pesos.loc[top, 'ven'])} de las ventas netas con el {pct(pesos.loc[top, 'ord'])} de las "
+                  f"órdenes, porque su ticket promedio (${es(ticket_cat[top])}) es el más alto: "
+                  f"{es(ticket_cat[top] / ticket_cat[segunda], 1)} veces el de {segunda}.")
+    else:
+        r1_txt = f"{top} concentra el {pct(pesos.loc[top, 'ven'])} de las ventas netas con el {pct(pesos.loc[top, 'ord'])} de las órdenes."
+    r1_txt += (f" La mayor cantidad de órdenes llega por {FUENTE_TEXTO.get(fp.index[0], fp.index[0])} ({pct(fp.iloc[0])}) y se paga "
+               f"con {PAGO_TEXTO.get(pp.index[0], pp.index[0])} ({pct(pp.iloc[0])}), aunque el número de órdenes por canal no permite "
+               "saber por sí solo cuál es más rentable.")
+    d1_txt = (f"Proteger el desempeño comercial de {top}, la categoría que sostiene el ingreso. Usar las fuentes de tráfico y los "
+              "medios de pago como línea base de seguimiento: antes de mover inversión entre canales hacen falta datos de costo "
+              "de adquisición y conversión, que el dataset no incluye.")
 
     # Objetivo 2
     if hay_rangos:
-        mas_dev = "más" if round(rd["devol"].iloc[-1], 2) > round(rd["devol"].iloc[0], 2) else "menos"
-        r2_txt = (f"El valor antes del descuento {variacion(cambio_bruto)} entre {r0} y {r1}, pero el ticket pagado {variacion(cambio_neto)}"
-                  + (": los descuentos altos reducen lo que se cobra por orden. " if ticket_baja else ". ")
-                  + f"Las devoluciones {plural(rd['devol'].iloc[0], rd['devol'].iloc[-1])} de {pct(rd['devol'].iloc[0])} a "
-                  f"{pct(rd['devol'].iloc[-1])} ({es(abs(round(rd['devol'].iloc[-1], 2) - round(rd['devol'].iloc[0], 2)), 2)} puntos {mas_dev}).")
-        d2_txt = (f"Moderar los descuentos altos ({r1}): reducen lo que se cobra sin que el valor de la orden antes del descuento suba en "
-                  f"proporción. Empezar por {desc_cat.index[0]}, la categoría con mayor descuento promedio ({pct(desc_cat.iloc[0])})."
-                  if ticket_baja else "Revisar el equilibrio entre descuento y volumen con los gráficos de la pestaña 2.")
+        if ticket_baja and abs(cambio_bruto) < 10:
+            r2_txt = (f"Solo reducen el valor de cada compra. Entre los rangos de {r0} y {r1}, el valor de la orden antes del descuento "
+                      f"{variacion(cambio_bruto)}, pero el ticket pagado cae {es(abs(cambio_neto), 2)} %.")
+        else:
+            r2_txt = (f"Entre los rangos de {r0} y {r1}, el ticket pagado {variacion(cambio_neto)} y el valor de la orden antes del "
+                      f"descuento {variacion(cambio_bruto)}.")
+        dif_dev = rd["devol"].iloc[-1] - rd["devol"].iloc[0]
+        if abs(dif_dev) < UMBRAL_DEVOLUCION:
+            r2_txt += f" Las devoluciones apenas cambian (de {pct(rd['devol'].iloc[0])} a {pct(rd['devol'].iloc[-1])})"
+            r2_txt += (f" y no crecen de forma continua: su valor más alto está en el rango de {rd['devol'].idxmax()} "
+                       f"({pct(rd['devol'].max())})." if rd["devol"].idxmax() != r1 else ".")
+        else:
+            r2_txt += (f" Las devoluciones {'suben' if dif_dev > 0 else 'bajan'} de {pct(rd['devol'].iloc[0])} a "
+                       f"{pct(rd['devol'].iloc[-1])}.")
+        if ticket_baja:
+            altos = f"{rd.index[-2]} y {r1}" if len(rd) > 2 else r1
+            d2_txt = f"Revisar los descuentos de los rangos más altos ({altos}), sobre todo los de {r1}."
+            if len(desc_cat) > 1 and brecha_desc < UMBRAL_DESCUENTO:
+                d2_txt += (f" Como el descuento promedio es casi igual en las {cuantos(len(desc_cat))} categorías (de "
+                           f"{pct(desc_cat.iloc[-1])} en {desc_cat.index[-1]} a {pct(desc_cat.iloc[0])} en {desc_cat.index[0]}), "
+                           "la revisión aplica a toda la política.")
+                if len(desc_cat) > 2:
+                    d2_txt += (f" {desc_cat.index[0]} y {desc_cat.index[1]}, con los promedios más altos, pueden ser el punto de "
+                               "partida, sin asumir que una diferencia tan pequeña sea un problema por sí misma.")
+            elif len(desc_cat) > 1:
+                d2_txt += (f" Empezar por {desc_cat.index[0]}, la categoría con mayor descuento promedio ({pct(desc_cat.iloc[0])}, "
+                           f"frente a {pct(desc_cat.iloc[-1])} en {desc_cat.index[-1]}).")
+        else:
+            d2_txt = "Revisar el equilibrio entre descuento y volumen con los gráficos de la pestaña 2."
     else:
         r2_txt, d2_txt = l2, "Amplíe los filtros para comparar rangos de descuento."
 
     # Objetivo 3
     if hay_retraso:
-        c0, c1 = round(cr.iloc[0], 2), round(cr.iloc[-1], 2)
-        r3_txt = (f"La calificación {tendencia(c0, c1)} de {es(c0, 2)} ({dias(cr.index[0])}) a {es(c1, 2)} ({dias(cr.index[-1])}), "
-                  f"{es(abs(c0 - c1), 2)} puntos {'menos' if c1 < c0 else 'más'}.")
-        if len(dev_retraso) > 1:
-            r3_txt += (f" Las devoluciones {plural(dev_retraso.iloc[0], dev_retraso.iloc[-1])} de {pct(dev_retraso.iloc[0])} a "
-                       f"{pct(dev_retraso.iloc[-1])} entre los mismos extremos.")
+        pasos = cr.diff().dropna()
+        verbo = "baja con cada día de retraso" if (pasos < 0).all() else tendencia(cr.iloc[0], cr.iloc[-1])
+        r3_txt = (f"La calificación {verbo}: de {es(cr.iloc[0], 2)} {dias_tarjeta(cr.index[0])} a {es(cr.iloc[-1], 2)} "
+                  f"{dias_tarjeta(cr.index[-1])}, {es(abs(cr.iloc[0] - cr.iloc[-1]), 2)} puntos "
+                  f"{'menos' if cr.iloc[-1] < cr.iloc[0] else 'más'}.")
     else:
-        r3_txt = l3_txt
-    d3_txt = "Reducir los días de retraso en toda la operación para proteger la calificación."
+        r3_txt = ""
+    tramos = []
     if len(a_operador) > 1:
-        d3_txt += (f" Si se quiere empezar por un punto: entre operadores, {a_operador.index[-1]} ({pct(a_operador.iloc[-1])}, a "
-                   f"{es(a_operador.iloc[0] - a_operador.iloc[-1], 2)} puntos del mejor)")
-        d3_txt += (f"; entre regiones, {a_region.index[-1]} ({pct(a_region.iloc[-1])}, a "
-                   f"{es(a_region.iloc[0] - a_region.iloc[-1], 2)} puntos de la mejor)." if len(a_region) > 1 else ".")
+        tramos.append((f"entre los {cuantos(len(a_operador))} operadores (de {pct(a_operador.iloc[-1])} en {a_operador.index[-1]} a "
+                       f"{pct(a_operador.iloc[0])} en {a_operador.index[0]})", brecha_op, a_operador.index[-1], "operadores"))
+    if len(a_region) > 1:
+        tramos.append((f"entre las {cuantos(len(a_region))} regiones (de {pct(a_region.iloc[-1])} en {a_region.index[-1]} a "
+                       f"{pct(a_region.iloc[0])} en {a_region.index[0]})", brecha_reg, a_region.index[-1], "regiones"))
+    parejo = bool(tramos) and all(b < UMBRAL_A_TIEMPO for _, b, _, _ in tramos)
+    r3_txt += f" El {pct(100 - k['a_tiempo'])} de las órdenes llega con retraso"
+    if tramos:
+        r3_txt += (", y la entrega a tiempo es casi igual " if parejo else ", y la entrega a tiempo cambia ") + \
+                  " y ".join(t for t, _, _, _ in tramos)
+    r3_txt += "."
+    sin_relacion = len(dev_retraso) > 1 and abs(dev_retraso.iloc[-1] - dev_retraso.iloc[0]) < UMBRAL_DEVOLUCION
+    if frase_promesa():
+        r3_txt += ((" Las devoluciones no siguen al retraso, pero sí" if sin_relacion else " Las devoluciones")
+                   + f" son mayores en la entrega prometida {PROMESA_TEXTO[str(dev_promesa.idxmax())]} ({pct(dev_promesa.max())}).")
+    elif sin_relacion:
+        r3_txt += " Las devoluciones no cambian de forma clara con el retraso."
+    r3_txt = r3_txt.strip()
+
+    d3_txt = "Hacer de la reducción de los retrasos una prioridad operativa para proteger la calificación."
+    if parejo:
+        quienes = " y ".join(g for _, _, _, g in tramos)
+        mas_bajos = " y ".join(peor for _, _, peor, _ in tramos)
+        d3_txt += (f" Como las diferencias entre {quienes} son de {es(max(b for _, b, _, _ in tramos), 2)} puntos o menos, el esfuerzo "
+                   f"debe cubrir toda la operación. {mas_bajos}, {'los' if len(tramos) > 1 else 'el'} de menor entrega a tiempo, "
+                   f"{'pueden' if len(tramos) > 1 else 'puede'} revisarse primero para verificar si la diferencia se mantiene en el tiempo.")
+    elif tramos:
+        _, brecha, peor, grupo = max(tramos, key=lambda t: t[1])
+        d3_txt += (f" Empezar por {peor}, {'el operador' if grupo == 'operadores' else 'la región'} con menor entrega a tiempo, "
+                   f"a {es(brecha, 2)} puntos {'del mejor' if grupo == 'operadores' else 'de la mejor'}.")
+    if frase_promesa():
+        d3_txt += f" Revisar también la promesa de entrega {PROMESA_TEXTO[str(dev_promesa.idxmax())].replace('para el ', 'el ')}."
 
     tarjetas = [
         ("Objetivo 1 · Ingreso y canales", "¿Qué categorías concentran el ingreso y por dónde llegan las órdenes?", r1_txt, d1_txt),
-        ("Objetivo 2 · Descuentos", "¿Los descuentos generan más valor o solo reducen la compra y aumentan las devoluciones?", r2_txt, d2_txt),
-        ("Objetivo 3 · Entrega y satisfacción", "¿Cuánto baja la calificación al aumentar los días de retraso?", r3_txt, d3_txt),
+        ("Objetivo 2 · Descuentos",
+         "¿Los descuentos generan más valor o solo reducen el valor de cada compra y aumentan las devoluciones?", r2_txt, d2_txt),
+        ("Objetivo 3 · Entrega y satisfacción",
+         "¿Cuánto baja la calificación cuando aumentan los días de retraso y dónde conviene actuar?", r3_txt, d3_txt),
     ]
     for columna, (titulo, pregunta, respuesta, decision) in zip(st.columns(3), tarjetas):
         with columna, st.container(border=True):
             st.markdown(md(f"**{titulo}**\n\n*{pregunta}*\n\n**Respuesta.** {respuesta}\n\n**Decisión.** {decision}"))
 
-    # Cierre: responde la pregunta guía
-    cierre = (f"**¿Dónde conviene actuar primero?** Proponemos este orden: primero los descuentos, porque es el único punto con un costo directo en pesos "
-              f"en los datos (se cedieron ${millones(cedido)} M, el {pct(pct_cedido)} del valor antes de descuento); luego los retrasos, "
-              f"que afectan al {pct(100 - k['a_tiempo'])} de las órdenes y se asocian con una calificación menor; y por último la inversión comercial en "
-              f"{top}, la categoría que ya concentra el ingreso y conviene sostener.")
-    st.markdown(md(cierre))
-    st.caption("El orden es una recomendación del análisis: se basa en el costo medible en pesos y en la satisfacción del cliente, "
-               "los dos temas de la pregunta guía.")
+    # Cierre: responde la pregunta guía con el orden de actuación del notebook 04 (sección 4.7)
+    st.markdown(md(
+        f"**¿Dónde conviene actuar primero?** Primero en los descuentos, que tienen un costo directo de ${es(cedido)} M "
+        f"({pct(pct_cedido)} del valor antes del descuento); después en la puntualidad, porque el {pct(100 - k['a_tiempo'])} de las "
+        f"órdenes llega con retraso y eso baja la calificación; y por último en el seguimiento de {top}, que sostiene el ingreso."))
+    st.markdown(
+        "| Prioridad | Frente | Acción principal | Qué monitorear en el dashboard |\n"
+        "|---|---|---|---|\n"
+        "| 1 | Descuentos | Revisar la profundidad de los descuentos por rango, empezando por los de 15 % o más. "
+        "| Ticket antes y después del descuento, participación en ventas y devoluciones (pestaña 2). |\n"
+        "| 2 | Entregas | Reducir los días de retraso en toda la operación y revisar la promesa de entrega el mismo día. "
+        "| Entrega a tiempo, calificación según los días de retraso y devoluciones según la promesa (pestaña 3). |\n"
+        f"| 3 | Desempeño comercial | Mantener el seguimiento a {top} y a la composición de las órdenes por canal y medio de pago. "
+        "| Participación por categoría y órdenes por fuente de tráfico y medio de pago (pestaña 1). |")
 
     st.subheader("Detalle por categoría")
     resumen = dx.assign(cal=dx["calificacion_producto_1a5"].astype("float64"), a_tiempo=dx["dias_retraso"].eq(0)).groupby("categoria").agg(
@@ -693,11 +857,12 @@ with t4:
     st.subheader("Órdenes filtradas")
     vista = dx[["id_orden", "fecha_orden", "categoria", "region", "fuente_trafico", "metodo_pago", "operador_entrega",
                 "valor_neto_cop", "descuento_pct", "dias_retraso", "devolucion_30d", "calificacion_producto_1a5"]]
+    vista = vista.assign(devolucion_30d=vista["devolucion_30d"].map({1: "Sí", 0: "No"}))  # más legible que 1/0
     st.dataframe(vista.head(1000), hide_index=True, column_config={
         "id_orden": "Orden", "fecha_orden": st.column_config.DateColumn("Fecha", format="YYYY-MM-DD"),
         "categoria": "Categoría", "region": "Región", "fuente_trafico": "Fuente de tráfico", "metodo_pago": "Medio de pago",
         "operador_entrega": "Operador", "valor_neto_cop": st.column_config.NumberColumn("Valor neto (COP)", format="$ %d"),
         "descuento_pct": st.column_config.NumberColumn("Descuento (%)", format="%.2f"),
-        "dias_retraso": "Días de retraso", "devolucion_30d": "Devuelta (30 días)", "calificacion_producto_1a5": "Calificación promedio"})
+        "dias_retraso": "Días de retraso", "devolucion_30d": "Devuelta (30 días)", "calificacion_producto_1a5": "Calificación"})
     st.caption(f"Se muestran las primeras 1.000 de {es(len(dx))} órdenes filtradas.")
     st.download_button("Descargar datos filtrados (CSV)", a_csv(dx), "ordenes_filtradas.csv", "text/csv")
